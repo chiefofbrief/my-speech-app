@@ -8,6 +8,26 @@ from audio_recorder_streamlit import audio_recorder
 api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 client = openai.Client(api_key=api_key)
 
+# ---------------- HELPERS ----------------
+def slow_text(text):
+    """
+    Adds pauses so TTS speaks slower and warmer.
+    """
+    parts = text.split(". ")
+    return ".\n\n".join(parts)
+
+def gentle_repeat(text):
+    """
+    Repeats the key noun phrase gently.
+    Example:
+    'I see your brother.' -> 'I see your brother.\n\nYour brother.'
+    """
+    lines = text.strip().split("\n")
+    for line in lines:
+        if "your " in line:
+            return text + "\n\n" + line.strip()
+    return text
+
 # ---------------- SESSION STATE ----------------
 if "idx" not in st.session_state:
     st.session_state.idx = 0
@@ -47,7 +67,7 @@ header, footer {visibility: hidden;}
     margin-bottom: 20px;
 }
 
-/* HUGE TAP BUTTON */
+/* HUGE MIC BUTTON */
 div[data-testid="stAudioRecorder"] button {
     width: 100% !important;
     height: 300px !important;
@@ -76,34 +96,28 @@ img_path = os.path.join("assets", current_img["file"])
 if os.path.exists(img_path):
     st.image(img_path)
 
-# ---------------- INITIAL SPEECH (ON IMAGE LOAD) ----------------
+# ---------------- INITIAL SPEECH ----------------
 if not st.session_state.has_spoken:
     opening_text = "I see people together. Who is this?"
+    spoken_text = slow_text(opening_text)
+
     st.session_state.sarah_text = opening_text
     st.session_state.status = "Sarah is talking…"
-
-    ssml = f"""
-    <speak>
-      <prosody rate="slow" pitch="+2st">
-        {opening_text}
-      </prosody>
-    </speak>
-    """
 
     speech = client.audio.speech.create(
         model="tts-1",
         voice="nova",
-        input=ssml
+        input=spoken_text
     )
 
     st.session_state.audio_bytes = speech.content
     st.session_state.has_spoken = True
 
-# ---------------- DISPLAY TEXT ----------------
+# ---------------- DISPLAY ----------------
 st.markdown(f"<div class='sarah'>{st.session_state.sarah_text}</div>", unsafe_allow_html=True)
 st.markdown(f"<div class='status'>{st.session_state.status}</div>", unsafe_allow_html=True)
 
-# ---------------- AUDIO PLAYBACK (HIDDEN UI) ----------------
+# ---------------- AUDIO (NO UI) ----------------
 if st.session_state.audio_bytes:
     st.audio(st.session_state.audio_bytes, autoplay=True)
     st.session_state.audio_bytes = None
@@ -114,6 +128,7 @@ audio_input = audio_recorder(text="", neutral_color="#9dbdb1", icon_size="4x")
 # ---------------- INTERACTION ----------------
 if audio_input:
     st.session_state.status = "Sarah is listening…"
+
     with open("input.wav", "wb") as f:
         f.write(audio_input)
 
@@ -131,9 +146,10 @@ WHO MODE:
 - Do NOT guess names.
 - Do NOT add details.
 - Structure:
-  1) Say one thing you see
+  1) One thing you see
   2) One playful reaction
   3) Ask exactly: "Who is this?"
+- Gentle repetition is allowed.
 """
 
     response = client.chat.completions.create(
@@ -147,24 +163,22 @@ WHO MODE:
     )
 
     ai_text = response.choices[0].message.content
+
+    # Apply pacing + repetition
+    paced = slow_text(ai_text)
+    final_spoken = gentle_repeat(paced)
+
     st.session_state.sarah_text = ai_text
     st.session_state.status = "Sarah is talking…"
-
-    ssml = f"""
-    <speak>
-      <prosody rate="slow" pitch="+2st">
-        {ai_text}
-      </prosody>
-    </speak>
-    """
 
     speech = client.audio.speech.create(
         model="tts-1",
         voice="nova",
-        input=ssml
+        input=final_spoken
     )
 
     st.session_state.audio_bytes = speech.content
     st.rerun()
+
 
 
