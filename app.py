@@ -2,6 +2,7 @@ import streamlit as st
 import openai
 import json
 import os
+import re
 from audio_recorder_streamlit import audio_recorder
 
 # ---------------- CONFIG ----------------
@@ -10,23 +11,50 @@ client = openai.Client(api_key=api_key)
 
 # ---------------- HELPERS ----------------
 def slow_text(text):
-    """
-    Adds pauses so TTS speaks slower and warmer.
-    """
+    """Adds pauses so TTS speaks slower and warmer."""
     parts = text.split(". ")
     return ".\n\n".join(parts)
 
 def gentle_repeat(text):
-    """
-    Repeats the key noun phrase gently.
-    Example:
-    'I see your brother.' -> 'I see your brother.\n\nYour brother.'
-    """
+    """Repeats key noun phrases gently."""
     lines = text.strip().split("\n")
     for line in lines:
         if "your " in line:
             return text + "\n\n" + line.strip()
     return text
+
+def sanitize_text(text):
+    """Removes problematic characters for TTS."""
+    if not text:
+        return ""
+    # remove non-ASCII characters
+    text = re.sub(r"[^\x00-\x7F]+", " ", text)
+    # replace multiple spaces/newlines with single space/newline
+    text = re.sub(r"\s+\n", "\n", text)
+    text = re.sub(r"\n\s+", "\n", text)
+    text = re.sub(r"[ ]{2,}", " ", text)
+    return text.strip()
+
+def tts_speak(text):
+    """Calls OpenAI TTS safely, returns bytes or None."""
+    text = sanitize_text(text)
+    if not text:
+        st.warning("No text available for speech.")
+        return None
+    try:
+        speech = client.audio.speech.create(
+            model="tts-1",
+            voice="nova",
+            input=text
+        )
+        return speech.content
+    except openai.error.BadRequestError:
+        st.error("TTS request failed. Check text length or content.")
+        st.write(text)
+        return None
+    except Exception as e:
+        st.error(f"Unexpected error in TTS: {e}")
+        return None
 
 # ---------------- SESSION STATE ----------------
 if "idx" not in st.session_state:
@@ -104,20 +132,14 @@ if not st.session_state.has_spoken:
     st.session_state.sarah_text = opening_text
     st.session_state.status = "Sarah is talking…"
 
-    speech = client.audio.speech.create(
-        model="tts-1",
-        voice="nova",
-        input=spoken_text
-    )
-
-    st.session_state.audio_bytes = speech.content
+    st.session_state.audio_bytes = tts_speak(spoken_text)
     st.session_state.has_spoken = True
 
 # ---------------- DISPLAY ----------------
 st.markdown(f"<div class='sarah'>{st.session_state.sarah_text}</div>", unsafe_allow_html=True)
 st.markdown(f"<div class='status'>{st.session_state.status}</div>", unsafe_allow_html=True)
 
-# ---------------- AUDIO (NO UI) ----------------
+# ---------------- AUDIO PLAY ----------------
 if st.session_state.audio_bytes:
     st.audio(st.session_state.audio_bytes, autoplay=True)
     st.session_state.audio_bytes = None
@@ -170,15 +192,10 @@ WHO MODE:
 
     st.session_state.sarah_text = ai_text
     st.session_state.status = "Sarah is talking…"
+    st.session_state.audio_bytes = tts_speak(final_spoken)
 
-    speech = client.audio.speech.create(
-        model="tts-1",
-        voice="nova",
-        input=final_spoken
-    )
+    st.experimental_rerun()
 
-    st.session_state.audio_bytes = speech.content
-    st.rerun()
 
 
 
