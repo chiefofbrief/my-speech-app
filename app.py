@@ -17,9 +17,11 @@ def slow_text(text):
 
 def gentle_repeat(text):
     """Repeats key noun phrases gently."""
+    if not text:
+        return ""
     lines = text.strip().split("\n")
     for line in lines:
-        if "your " in line:
+        if "your " in line.lower():
             return text + "\n\n" + line.strip()
     return text
 
@@ -27,9 +29,7 @@ def sanitize_text(text):
     """Removes problematic characters for TTS."""
     if not text:
         return ""
-    # remove non-ASCII characters
     text = re.sub(r"[^\x00-\x7F]+", " ", text)
-    # replace multiple spaces/newlines with single space/newline
     text = re.sub(r"\s+\n", "\n", text)
     text = re.sub(r"\n\s+", "\n", text)
     text = re.sub(r"[ ]{2,}", " ", text)
@@ -39,7 +39,6 @@ def tts_speak(text):
     """Calls OpenAI TTS safely, returns bytes or None."""
     text = sanitize_text(text)
     if not text:
-        st.warning("No text available for speech.")
         return None
     try:
         speech = client.audio.speech.create(
@@ -56,27 +55,57 @@ def tts_speak(text):
         st.error(f"Unexpected error in TTS: {e}")
         return None
 
+def generate_ai_response(transcript, img_description, sys_prompt):
+    """Calls GPT-5-mini with rules and transcript."""
+    image_rules = f"""
+WHO MODE:
+- Only talk about people in this description:
+  "{img_description}"
+- Do NOT guess names.
+- Do NOT add details.
+- Structure:
+  1) One thing you see
+  2) One playful reaction
+  3) Ask exactly: "Who is this?"
+- Gentle repetition is allowed.
+"""
+    try:
+        response = client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "system", "content": image_rules},
+                {"role": "user", "content": transcript}
+            ],
+            max_completion_tokens=50
+        )
+        ai_text = response.choices[0].message.content.strip()
+        if not ai_text:
+            return None
+        return ai_text
+    except Exception as e:
+        st.error(f"Error generating AI response: {e}")
+        return None
+
+def encourage_retry():
+    """Fallback encouragement text if AI fails."""
+    return "Hmm, I didn't catch that. Can you describe what you see a little differently?"
+
 # ---------------- SESSION STATE ----------------
-if "idx" not in st.session_state:
+for key in ["idx", "sarah_text", "status", "has_spoken", "audio_bytes"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
+if st.session_state.idx is None:
     st.session_state.idx = 0
-if "sarah_text" not in st.session_state:
-    st.session_state.sarah_text = ""
-if "status" not in st.session_state:
-    st.session_state.status = ""
-if "has_spoken" not in st.session_state:
+if st.session_state.has_spoken is None:
     st.session_state.has_spoken = False
-if "audio_bytes" not in st.session_state:
-    st.session_state.audio_bytes = None
 
 # ---------------- STYLE ----------------
 st.markdown("""
 <style>
 header, footer {visibility: hidden;}
 
-.block-container {
-    max-width: 800px;
-    margin: auto;
-}
+.block-container {max-width: 800px; margin: auto;}
 
 .sarah {
     font-size: 40px;
@@ -104,16 +133,13 @@ div[data-testid="stAudioRecorder"] button {
     border: 10px solid white !important;
 }
 
-div[data-testid="stAudioRecorder"] svg {
-    transform: scale(6);
-}
+div[data-testid="stAudioRecorder"] svg {transform: scale(6);}
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------- DATA ----------------
 with open("data/image_data.json") as f:
     images = json.load(f)
-
 with open("system_prompt.txt") as f:
     sys_prompt = f.read()
 
@@ -128,10 +154,8 @@ if os.path.exists(img_path):
 if not st.session_state.has_spoken:
     opening_text = "I see people together. Who is this?"
     spoken_text = slow_text(opening_text)
-
     st.session_state.sarah_text = opening_text
     st.session_state.status = "Sarah is talking…"
-
     st.session_state.audio_bytes = tts_speak(spoken_text)
     st.session_state.has_spoken = True
 
@@ -144,7 +168,7 @@ if st.session_state.audio_bytes:
     st.audio(st.session_state.audio_bytes, autoplay=True)
     st.session_state.audio_bytes = None
 
-# ---------------- MIC ----------------
+# ---------------- MICROPHONE INPUT ----------------
 audio_input = audio_recorder(text="", neutral_color="#9dbdb1", icon_size="4x")
 
 # ---------------- INTERACTION ----------------
@@ -154,47 +178,39 @@ if audio_input:
     with open("input.wav", "wb") as f:
         f.write(audio_input)
 
-    transcript = client.audio.transcriptions.create(
-        model="whisper-1",
-        file=open("input.wav", "rb")
-    ).text
+    try:
+        transcript = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=open("input.wav", "rb")
+        ).text.strip()
+    except Exception as e:
+        st.error(f"Error transcribing audio: {e}")
+        transcript = ""
+
+    if not transcript:
+        transcript = "No discernible speech detected."
 
     st.session_state.status = "Sarah is thinking…"
 
-    image_rules = f"""
-WHO MODE:
-- Only talk about people in this description:
-  "{current_img['description']}"
-- Do NOT guess names.
-- Do NOT add details.
-- Structure:
-  1) One thing you see
-  2) One playful reaction
-  3) Ask exactly: "Who is this?"
-- Gentle repetition is allowed.
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-5-mini",
-        messages=[
-            {"role": "system", "content": sys_prompt},
-            {"role": "system", "content": image_rules},
-            {"role": "user", "content": transcript}
-        ],
-        max_completion_tokens=50
-    )
-
-    ai_text = response.choices[0].message.content
+    ai_text = generate_ai_response(transcript, current_img["description"], sys_prompt)
+    if not ai_text:
+        ai_text = encourage_retry()
 
     # Apply pacing + repetition
     paced = slow_text(ai_text)
     final_spoken = gentle_repeat(paced)
+    if not final_spoken.strip():
+        final_spoken = ai_text.strip()
 
     st.session_state.sarah_text = ai_text
     st.session_state.status = "Sarah is talking…"
     st.session_state.audio_bytes = tts_speak(final_spoken)
 
-    st.experimental_rerun()
+    if st.session_state.audio_bytes:
+        st.experimental_rerun()
+    else:
+        st.session_state.status = "Sarah couldn't speak. Try again!"
+
 
 
 
