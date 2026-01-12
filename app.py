@@ -349,7 +349,6 @@ else:
 if st.session_state.audio_bytes:
     st.audio(st.session_state.audio_bytes, autoplay=True)
     st.session_state.audio_bytes = None
-    st.session_state.status = "ready"
 
 # ---------------- MICROPHONE ----------------
 audio_input = audio_recorder(text="", neutral_color=current_color, icon_size="4x")
@@ -362,22 +361,24 @@ with col2:
         st.rerun()
 
 # ---------------- INTERACTION ----------------
-if audio_input and st.session_state.status != "thinking":
-    # Save audio BEFORE rerun (audio_input is lost after rerun)
-    with open("input.wav", "wb") as f:
-        f.write(audio_input)
-    st.session_state.status = "thinking"
-    st.rerun()  # Show thinking state immediately
-
-# Check if we need to process (after rerun from thinking state)
-if st.session_state.status == "thinking" and os.path.exists("input.wav"):
+# Process audio immediately when received
+if audio_input:
+    # Transcribe directly from bytes
     try:
-        transcript = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=open("input.wav", "rb")
-        ).text.strip()
-    except Exception:
+        with open("input.wav", "wb") as f:
+            f.write(audio_input)
+
+        with open("input.wav", "rb") as f:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f
+            ).text.strip()
+    except Exception as e:
         transcript = ""
+
+    # Clean up
+    if os.path.exists("input.wav"):
+        os.remove("input.wav")
 
     if not transcript:
         transcript = "mmm"
@@ -398,7 +399,6 @@ if st.session_state.status == "thinking" and os.path.exists("input.wav"):
 
     st.session_state.sarah_text = ai_text
     st.session_state.audio_bytes = tts_speak(playful_wrap(add_pauses(ai_text)))
-    st.session_state.status = "talking"
 
     # Handle progression
     should_move = st.session_state.successes >= MAX_WHO_ELSE or st.session_state.attempt >= MAX_ATTEMPTS
@@ -406,11 +406,5 @@ if st.session_state.status == "thinking" and os.path.exists("input.wav"):
         st.session_state.should_advance = True
     elif not is_success:
         st.session_state.attempt += 1
-
-    # Clean up audio file
-    try:
-        os.remove("input.wav")
-    except:
-        pass
 
     st.rerun()
