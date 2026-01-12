@@ -11,11 +11,9 @@ client = openai.Client(api_key=api_key)
 
 # ---------------- HELPERS ----------------
 def slow_text(text):
-    """Add pauses for TTS."""
     return ".\n\n".join(text.split(". "))
 
 def gentle_repeat(text):
-    """Repeat key noun phrases gently."""
     if not text:
         return ""
     for line in text.strip().split("\n"):
@@ -24,7 +22,6 @@ def gentle_repeat(text):
     return text
 
 def sanitize_text(text):
-    """Remove problematic characters for TTS."""
     if not text:
         return ""
     text = re.sub(r"[^\x00-\x7F]+", " ", text)
@@ -34,7 +31,6 @@ def sanitize_text(text):
     return text.strip()
 
 def tts_speak(text):
-    """Call OpenAI TTS safely."""
     text = sanitize_text(text)
     if not text:
         return None
@@ -50,7 +46,6 @@ def tts_speak(text):
         return None
 
 def generate_ai_response(transcript, img_description, sys_prompt):
-    """Call GPT-5-mini with rules and transcript."""
     image_rules = f"""
 WHO MODE:
 - Only talk about people in this description:
@@ -75,7 +70,7 @@ WHO MODE:
         )
         ai_text = response.choices[0].message.content.strip()
         if not ai_text:
-            return "Mmm, good! Tell me more!"  # playful fallback
+            return "Mmm, good! Tell me more!"
         return ai_text
     except Exception:
         return "Mmm, good! Tell me more!"
@@ -157,24 +152,27 @@ if audio_input:
     if not transcript:
         transcript = "mmm"
 
-    # Map known sounds to relationships
-    transcript_key = transcript.lower()
-    transcript_mapped = sound_map.get(transcript_key, transcript)
+    # Map known sounds
+    transcript_mapped = sound_map.get(transcript.lower(), transcript)
 
-    st.session_state.status = "Sarah is thinking…"
+    # Generate AI response
     ai_text = generate_ai_response(transcript_mapped, current_img["description"], sys_prompt)
 
-    # Pacing + repetition
+    # Slow + gentle repetition
     final_spoken = gentle_repeat(slow_text(ai_text))
     if not final_spoken.strip():
         final_spoken = ai_text.strip() or "Mmm, I see!"
 
+    # Update session state
     st.session_state.sarah_text = ai_text
     st.session_state.audio_bytes = tts_speak(final_spoken)
     st.session_state.status = "Sarah is talking…"
 
-    if st.session_state.audio_bytes:
-        st.experimental_rerun()
+# Play audio if available
+if st.session_state.audio_bytes:
+    st.audio(st.session_state.audio_bytes, autoplay=True)
+    st.session_state.audio_bytes = None
+
 
 
 
