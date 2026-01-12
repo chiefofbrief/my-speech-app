@@ -8,7 +8,11 @@ import hashlib
 from audio_recorder_streamlit import audio_recorder
 
 # ---------------- CONFIG ----------------
-api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+try:
+    api_key = st.secrets.get("OPENAI_API_KEY") or st.secrets.get("openai_api_key")
+except:
+    api_key = None
+api_key = api_key or os.getenv("OPENAI_API_KEY")
 client = openai.Client(api_key=api_key)
 
 # Conversation pacing - this is meant to be SLOW and encouraging
