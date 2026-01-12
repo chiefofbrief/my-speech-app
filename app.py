@@ -10,50 +10,27 @@ from audio_recorder_streamlit import audio_recorder
 api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 client = openai.Client(api_key=api_key)
 
+MAX_ATTEMPTS = 3
+TTS_SPEED = 0.85  # Slower, more natural pace
+
 # ---------------- HELPERS ----------------
-def extra_slow_text(text):
-    """Insert line breaks between words for very slow TTS (used for opening line)."""
-    return "\n\n".join(text.split())
-
-def slow_text(text):
-    """Add extra pauses for AI-generated sentences (follow-ups)."""
-    parts = [p.strip() for p in re.split(r'[.!?]', text) if p.strip()]
-    return ".\n\n\n".join(parts)  # triple line breaks for natural pause
-
-def gentle_repeat(text):
-    """Repeat key noun phrases gently."""
+def add_pauses(text):
+    """Add natural pauses between sentences for TTS."""
     if not text:
         return ""
-    for line in text.strip().split("\n"):
-        if "your " in line.lower():
-            return text + "\n\n" + line.strip()
-    return text
-
-def playful_expand(text):
-    """
-    Make short AI outputs more playful, slower, and encouraging.
-    Adds filler sounds and extra line breaks for TTS.
-    Only for follow-up AI responses, NOT opening line.
-    """
-    fillers = ["Mmm", "Oooh", "Hehe", "Ahh"]
-    text = f"{random.choice(fillers)}.\n\n{text}.\n\n{random.choice(fillers)}."
-    # For very short text, add another playful line
-    if len(text.split()) <= 12:
-        text += f"\n\n{random.choice(fillers)}, that’s wonderful!"
-    return text
+    parts = [p.strip() for p in re.split(r'[.!?]', text) if p.strip()]
+    return ".\n\n".join(parts) + "."
 
 def sanitize_text(text):
     """Clean text for TTS."""
     if not text:
         return ""
     text = re.sub(r"[^\x00-\x7F]+", " ", text)
-    text = re.sub(r"\s+\n", "\n", text)
-    text = re.sub(r"\n\s+", "\n", text)
-    text = re.sub(r"[ ]{2,}", " ", text)
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 def tts_speak(text):
-    """Call OpenAI TTS safely."""
+    """Call OpenAI TTS with slower speed."""
     text = sanitize_text(text)
     if not text:
         return None
@@ -61,58 +38,104 @@ def tts_speak(text):
         speech = client.audio.speech.create(
             model="tts-1",
             voice="nova",
-            input=text
+            input=text,
+            speed=TTS_SPEED
         )
         return speech.content
     except Exception as e:
         st.error(f"TTS failed: {e}")
         return None
 
-def generate_ai_response(transcript, img_description, sys_prompt):
-    """Generate AI response with rules and fallback."""
-    image_rules = f"""
-WHO MODE:
-- Only talk about people in this description:
-  "{img_description}"
-- Do NOT guess names
-- Do NOT add details
-- Structure:
-  1) One thing you see
-  2) One playful reaction
-  3) Ask exactly: "Who is this?"
-- Gentle repetition is allowed
+def extract_relationships(description):
+    """Extract relationship words from image description."""
+    relationships = []
+    patterns = ["brother", "mom", "mother", "dad", "father", "grandmom",
+                "grandmother", "granddad", "grandfather", "cousin", "sister", "aunt", "uncle"]
+    desc_lower = description.lower()
+    for rel in patterns:
+        if rel in desc_lower:
+            relationships.append(rel)
+    return relationships
+
+def check_success(transcript, description):
+    """Check if user correctly named someone in the photo."""
+    transcript_lower = transcript.lower()
+    relationships = extract_relationships(description)
+
+    # Map spoken words to relationship words
+    word_map = {
+        "am": "brother",
+        "nani": "grandmom",
+        "grandmother": "grandmom",
+        "mother": "mom",
+        "father": "dad",
+        "grandfather": "granddad"
+    }
+
+    # Check direct matches
+    for rel in relationships:
+        if rel in transcript_lower:
+            return True
+
+    # Check mapped words
+    for word, mapped in word_map.items():
+        if word in transcript_lower and mapped in relationships:
+            return True
+        # Also check if the mapped word's base is in relationships
+        if word in transcript_lower:
+            for rel in relationships:
+                if mapped in rel or rel in mapped:
+                    return True
+
+    return False
+
+def generate_ai_response(transcript, img_description, sys_prompt, attempt, is_success):
+    """Generate AI response based on attempt number and success."""
+
+    context = f"""
+IMAGE DESCRIPTION: {img_description}
+
+ATTEMPT NUMBER: {attempt}
+USER SAID: "{transcript}"
+CORRECT ANSWER DETECTED: {"Yes" if is_success else "No"}
+
+Remember:
+- Only mention people from the IMAGE DESCRIPTION
+- Keep sentences very short (3-6 words)
+- Be warm and encouraging
 """
+
     try:
         response = client.chat.completions.create(
-            model="gpt-5-mini",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": sys_prompt},
-                {"role": "system", "content": image_rules},
-                {"role": "user", "content": transcript}
+                {"role": "user", "content": context}
             ],
-            max_completion_tokens=70
+            max_tokens=60,
+            temperature=0.7
         )
         ai_text = response.choices[0].message.content.strip()
         if not ai_text:
             return "Mmm, good! Tell me more!"
         return ai_text
-    except Exception:
+    except Exception as e:
+        st.error(f"AI error: {e}")
         return "Mmm, good! Tell me more!"
 
-# Map simple sounds to relationships
-sound_map = {
-    "am": "your brother",
-    "nani": "your grandmom"
-}
-
 # ---------------- SESSION STATE ----------------
-for key in ["idx","sarah_text","status","has_spoken","audio_bytes"]:
+defaults = {
+    "idx": 0,
+    "attempt": 1,
+    "sarah_text": "",
+    "status": "",
+    "audio_bytes": None,
+    "has_spoken": False,
+    "should_advance": False
+}
+for key, val in defaults.items():
     if key not in st.session_state:
-        st.session_state[key] = None
-if st.session_state.idx is None:
-    st.session_state.idx = 0
-if st.session_state.has_spoken is None:
-    st.session_state.has_spoken = False
+        st.session_state[key] = val
 
 # ---------------- STYLE ----------------
 st.markdown("""
@@ -132,19 +155,24 @@ with open("data/image_data.json") as f:
 with open("system_prompt.txt") as f:
     sys_prompt = f.read()
 
-current_img = images[st.session_state.idx % len(images)]
+# Handle photo advancement
+if st.session_state.should_advance:
+    st.session_state.idx = (st.session_state.idx + 1) % len(images)
+    st.session_state.attempt = 1
+    st.session_state.has_spoken = False
+    st.session_state.should_advance = False
+
+current_img = images[st.session_state.idx]
 img_path = os.path.join("assets", current_img["file"])
 if os.path.exists(img_path):
     st.image(img_path)
 
 # ---------------- INITIAL SPEECH ----------------
 if not st.session_state.has_spoken:
-    opening_text = "I see people together. Who is this?"
-    st.session_state.sarah_text = opening_text
-    st.session_state.status = "Sarah is talking…"
-    # Slow word by word, no extra filler
-    final_opening = extra_slow_text(opening_text)
-    st.session_state.audio_bytes = tts_speak(final_opening)
+    opening = "Oooh, I see a photo! Who is this?"
+    st.session_state.sarah_text = opening
+    st.session_state.status = "Sarah is talking..."
+    st.session_state.audio_bytes = tts_speak(add_pauses(opening))
     st.session_state.has_spoken = True
 
 # ---------------- DISPLAY ----------------
@@ -161,48 +189,51 @@ audio_input = audio_recorder(text="", neutral_color="#9dbdb1", icon_size="4x")
 
 # ---------------- INTERACTION ----------------
 if audio_input:
-    st.session_state.status = "Sarah is listening…"
-    with open("input.wav","wb") as f:
+    st.session_state.status = "Sarah is listening..."
+
+    # Save and transcribe
+    with open("input.wav", "wb") as f:
         f.write(audio_input)
 
-    # Transcribe
     try:
         transcript = client.audio.transcriptions.create(
             model="whisper-1",
-            file=open("input.wav","rb")
+            file=open("input.wav", "rb")
         ).text.strip()
     except Exception:
         transcript = ""
 
-    # Fallback for very short sounds
+    # Fallback for empty/short sounds
     if not transcript:
         transcript = "mmm"
 
-    transcript_mapped = sound_map.get(transcript.lower(), transcript)
+    # Check for success
+    is_success = check_success(transcript, current_img["description"])
 
-    ai_text = generate_ai_response(transcript_mapped, current_img["description"], sys_prompt)
+    # Generate response
+    ai_text = generate_ai_response(
+        transcript,
+        current_img["description"],
+        sys_prompt,
+        st.session_state.attempt,
+        is_success
+    )
 
-    # Slow + repeat + playful + encouraging
-    final_spoken = gentle_repeat(slow_text(ai_text))
-    final_spoken = playful_expand(final_spoken)
-
+    # Update state
     st.session_state.sarah_text = ai_text
-    st.session_state.audio_bytes = tts_speak(final_spoken)
-    st.session_state.status = "Sarah is talking…"
+    st.session_state.audio_bytes = tts_speak(add_pauses(ai_text))
+    st.session_state.status = "Sarah is talking..."
 
-# Play audio if available
-if st.session_state.audio_bytes:
-    st.audio(st.session_state.audio_bytes, autoplay=True)
-    st.session_state.audio_bytes = None
+    # Handle progression
+    if is_success or st.session_state.attempt >= MAX_ATTEMPTS:
+        # Check if AI response suggests moving on
+        if "another photo" in ai_text.lower() or "next" in ai_text.lower():
+            st.session_state.should_advance = True
+        elif is_success:
+            st.session_state.attempt = 1  # Reset for "who else" questions
+        else:
+            st.session_state.should_advance = True
+    else:
+        st.session_state.attempt += 1
 
-
-
-
-
-
-
-
-
-
-
-
+    st.rerun()
