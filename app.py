@@ -3,8 +3,8 @@ import openai
 import json
 import os
 import re
-from audio_recorder_streamlit import audio_recorder
 import random
+from audio_recorder_streamlit import audio_recorder
 
 # ---------------- CONFIG ----------------
 api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -12,11 +12,9 @@ client = openai.Client(api_key=api_key)
 
 # ---------------- HELPERS ----------------
 def slow_text(text):
-    """Add extra pauses and line breaks for slower TTS."""
-    # Split by periods
-    parts = [p.strip() for p in text.split(".") if p.strip()]
-    # Join with double line breaks for pause
-    return ".\n\n".join(parts)
+    """Add extra pauses for slower TTS."""
+    parts = [p.strip() for p in re.split(r'[.!?]', text) if p.strip()]
+    return ".\n\n\n".join(parts)  # triple line breaks for extra pause
 
 def gentle_repeat(text):
     """Repeat key noun phrases gently."""
@@ -27,12 +25,12 @@ def gentle_repeat(text):
             return text + "\n\n" + line.strip()
     return text
 
-def sillyify(text):
-    """Add playful filler sounds to make speech silly."""
+def playful_expand(text):
+    """Make short AI outputs more playful and encouraging."""
     fillers = ["Mmm", "Oooh", "Hehe", "Ahh"]
-    # If short text, prepend/append a filler
-    if len(text.split()) <= 6:
-        return f"{random.choice(fillers)}. {text}. {random.choice(fillers)}."
+    if len(text.split()) <= 8:
+        text = f"{random.choice(fillers)}. {text}. {random.choice(fillers)}."
+        text += f"\n\n{random.choice(fillers)}, that’s wonderful!"
     return text
 
 def sanitize_text(text):
@@ -83,7 +81,7 @@ WHO MODE:
                 {"role": "system", "content": image_rules},
                 {"role": "user", "content": transcript}
             ],
-            max_completion_tokens=50
+            max_completion_tokens=70  # slightly longer for playful follow-ups
         )
         ai_text = response.choices[0].message.content.strip()
         if not ai_text:
@@ -135,8 +133,7 @@ if not st.session_state.has_spoken:
     opening_text = "I see people together. Who is this?"
     st.session_state.sarah_text = opening_text
     st.session_state.status = "Sarah is talking…"
-    # Add slow + silly formatting
-    st.session_state.audio_bytes = tts_speak(sillyify(slow_text(opening_text)))
+    st.session_state.audio_bytes = tts_speak(playful_expand(slow_text(opening_text)))
     st.session_state.has_spoken = True
 
 # ---------------- DISPLAY ----------------
@@ -166,22 +163,17 @@ if audio_input:
     except Exception:
         transcript = ""
 
-    # Fallback for very short sounds
     if not transcript:
         transcript = "mmm"
 
-    # Map known sounds
     transcript_mapped = sound_map.get(transcript.lower(), transcript)
 
-    # Generate AI response
     ai_text = generate_ai_response(transcript_mapped, current_img["description"], sys_prompt)
 
-    # Slow + repeat + silly
-    final_spoken = sillyify(gentle_repeat(slow_text(ai_text)))
-    if not final_spoken.strip():
-        final_spoken = ai_text.strip() or "Mmm, I see!"
+    # Slow, repeat, playful, encouraging
+    final_spoken = gentle_repeat(slow_text(ai_text))
+    final_spoken = playful_expand(final_spoken)
 
-    # Update session state
     st.session_state.sarah_text = ai_text
     st.session_state.audio_bytes = tts_speak(final_spoken)
     st.session_state.status = "Sarah is talking…"
@@ -190,6 +182,7 @@ if audio_input:
 if st.session_state.audio_bytes:
     st.audio(st.session_state.audio_bytes, autoplay=True)
     st.session_state.audio_bytes = None
+
 
 
 
