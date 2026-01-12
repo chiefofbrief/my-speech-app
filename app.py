@@ -11,8 +11,9 @@ from audio_recorder_streamlit import audio_recorder
 api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 client = openai.Client(api_key=api_key)
 
-MAX_ATTEMPTS = 3
-MAX_WHO_ELSE = 2
+# Conversation pacing - this is meant to be SLOW and encouraging
+MIN_TURNS_PER_PHOTO = 5   # At least 5 back-and-forth exchanges per photo
+MAX_TURNS_PER_PHOTO = 8   # Move on after 8 turns max
 TTS_SPEED = 0.75
 
 # ---------------- HELPERS ----------------
@@ -29,7 +30,7 @@ def add_pauses(text):
 
 def playful_wrap(text):
     """Add playful fillers to make responses warmer."""
-    fillers = ["Mmm.", "Oooh.", "Hehe.", "Ahh."]
+    fillers = ["Mmm.", "Oooh.", "Hehe.", "Ahh.", "Ooh."]
     opener = random.choice(fillers)
     return f"{opener}\n\n{text}"
 
@@ -95,24 +96,42 @@ def check_success(transcript, description):
 
     return False
 
-def generate_ai_response(transcript, img_description, sys_prompt, attempt, is_success, successes):
-    """Generate AI response based on attempt number and success."""
-    should_move_on = successes >= MAX_WHO_ELSE or attempt >= MAX_ATTEMPTS
+def generate_ai_response(transcript, img_description, sys_prompt, turn_number, is_success, ready_to_move):
+    """Generate AI response based on turn number and conversation flow."""
+
+    # Determine the conversation phase
+    if turn_number == 1:
+        phase = "OPENING"
+        instruction = "This is your first response. Be warm, describe something simple in the photo, ask 'Who is this?'"
+    elif turn_number <= 3:
+        phase = "EARLY"
+        instruction = "Keep encouraging! If they got someone right, celebrate big and ask 'Who else do you see?' If not, give a gentle hint about ONE person."
+    elif turn_number <= 5:
+        phase = "MIDDLE"
+        instruction = "Keep the energy up! Celebrate any response. Point out someone they haven't mentioned yet. Ask playful questions."
+    elif ready_to_move:
+        phase = "WRAPPING UP"
+        instruction = "Time to finish this photo. Give big celebration for the conversation, then say 'Let's see another photo!'"
+    else:
+        phase = "CONTINUING"
+        instruction = "Keep going! Find something new to point out or ask about. Stay playful and encouraging."
 
     context = f"""
 IMAGE DESCRIPTION: {img_description}
 
-ATTEMPT NUMBER: {attempt}
+TURN NUMBER: {turn_number}
+PHASE: {phase}
 USER SAID: "{transcript}"
-CORRECT ANSWER DETECTED: {"Yes" if is_success else "No"}
-TIMES CORRECTLY ANSWERED ON THIS PHOTO: {successes}
-SHOULD MOVE TO NEXT PHOTO: {"Yes" if should_move_on else "No"}
+THEY NAMED SOMEONE CORRECTLY: {"Yes" if is_success else "No"}
 
-Remember:
+INSTRUCTION: {instruction}
+
+RULES:
 - Only mention people from the IMAGE DESCRIPTION
-- Keep sentences very short (3-6 words)
-- Be warm and encouraging
-- If SHOULD MOVE TO NEXT PHOTO is Yes, say "Let's see another photo!"
+- Very short sentences (3-6 words)
+- Be warm, playful, encouraging
+- NEVER say the user is wrong
+- Only say "Let's see another photo!" if PHASE is "WRAPPING UP"
 """
 
     try:
@@ -122,8 +141,8 @@ Remember:
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": context}
             ],
-            max_tokens=60,
-            temperature=0.7
+            max_tokens=70,
+            temperature=0.8
         )
         ai_text = response.choices[0].message.content.strip()
         if not ai_text:
@@ -142,10 +161,8 @@ def get_audio_hash(audio_bytes):
 # ---------------- SESSION STATE ----------------
 if "idx" not in st.session_state:
     st.session_state.idx = 0
-if "attempt" not in st.session_state:
-    st.session_state.attempt = 1
-if "successes" not in st.session_state:
-    st.session_state.successes = 0
+if "turn" not in st.session_state:
+    st.session_state.turn = 0  # Total turns on current photo
 if "sarah_text" not in st.session_state:
     st.session_state.sarah_text = ""
 if "audio_bytes" not in st.session_state:
@@ -234,14 +251,13 @@ div[data-testid="stAudioRecorder"] svg {
 # ---------------- ALL DONE STATE ----------------
 if st.session_state.all_done:
     st.markdown("<div class='celebration'>All done! Great job, My!</div>", unsafe_allow_html=True)
-    celebration_audio = tts_speak("Yay! All done! Great job My! You did so well!")
+    celebration_audio = tts_speak("Yay! All done! Great job My! You did so well! I'm so proud of you!")
     if celebration_audio:
         st.audio(celebration_audio, autoplay=True)
 
     if st.button("Start Over"):
         st.session_state.idx = 0
-        st.session_state.attempt = 1
-        st.session_state.successes = 0
+        st.session_state.turn = 0
         st.session_state.sarah_text = ""
         st.session_state.audio_bytes = None
         st.session_state.has_spoken = False
@@ -266,6 +282,7 @@ if not st.session_state.has_spoken:
     st.session_state.sarah_text = opening
     st.session_state.audio_bytes = tts_speak(slow_opening(opening))
     st.session_state.has_spoken = True
+    st.session_state.turn = 1
 
 # ---------------- DISPLAY SARAH TEXT ----------------
 st.markdown(f"<div class='sarah'>{st.session_state.sarah_text}</div>", unsafe_allow_html=True)
@@ -277,11 +294,10 @@ if st.session_state.audio_bytes:
     st.session_state.audio_bytes = None
 
 # ---------------- MICROPHONE ----------------
-# Use key to reset component, pause_threshold for auto-stop on silence
 audio_input = audio_recorder(
     text="",
     icon_size="4x",
-    pause_threshold=2.0,  # Stop after 2 seconds of silence
+    pause_threshold=2.0,
     sample_rate=16000,
     key=f"recorder_{st.session_state.recorder_key}"
 )
@@ -289,12 +305,11 @@ audio_input = audio_recorder(
 # ---------------- SKIP BUTTON ----------------
 col1, col2, col3 = st.columns([1, 1, 1])
 with col2:
-    if st.button("Skip Photo"):
-        st.session_state.idx = (st.session_state.idx + 1) % total_photos
-        if st.session_state.idx == 0:
+    if st.button("Next Photo"):
+        st.session_state.idx += 1
+        if st.session_state.idx >= total_photos:
             st.session_state.all_done = True
-        st.session_state.attempt = 1
-        st.session_state.successes = 0
+        st.session_state.turn = 0
         st.session_state.has_spoken = False
         st.session_state.last_audio_hash = None
         st.session_state.recorder_key += 1
@@ -302,11 +317,11 @@ with col2:
 
 # ---------------- INTERACTION ----------------
 if audio_input:
-    # Check if this is new audio (not the same as last processed)
     audio_hash = get_audio_hash(audio_input)
 
     if audio_hash and audio_hash != st.session_state.last_audio_hash:
         st.session_state.last_audio_hash = audio_hash
+        st.session_state.turn += 1
 
         # Transcribe
         transcript = ""
@@ -326,38 +341,38 @@ if audio_input:
         if not transcript:
             transcript = "mmm"
 
-        # Check success
+        # Check if they named someone
         is_success = check_success(transcript, current_img["description"])
-        if is_success:
-            st.session_state.successes += 1
+
+        # Determine if ready to move (only after minimum turns)
+        ready_to_move = st.session_state.turn >= MIN_TURNS_PER_PHOTO
 
         # Generate response
         ai_text = generate_ai_response(
             transcript,
             current_img["description"],
             sys_prompt,
-            st.session_state.attempt,
+            st.session_state.turn,
             is_success,
-            st.session_state.successes
+            ready_to_move
         )
 
         st.session_state.sarah_text = ai_text
         st.session_state.audio_bytes = tts_speak(playful_wrap(add_pauses(ai_text)))
 
-        # Handle progression
-        should_move = st.session_state.successes >= MAX_WHO_ELSE or st.session_state.attempt >= MAX_ATTEMPTS
-        if should_move or "another photo" in ai_text.lower() or "next" in ai_text.lower():
-            # Move to next photo
+        # Only advance if we've had enough turns AND the AI said to move on
+        should_advance = (
+            st.session_state.turn >= MIN_TURNS_PER_PHOTO and
+            "another photo" in ai_text.lower()
+        ) or st.session_state.turn >= MAX_TURNS_PER_PHOTO
+
+        if should_advance:
             st.session_state.idx += 1
             if st.session_state.idx >= total_photos:
                 st.session_state.all_done = True
-            st.session_state.attempt = 1
-            st.session_state.successes = 0
+            st.session_state.turn = 0
             st.session_state.has_spoken = False
             st.session_state.last_audio_hash = None
-            st.session_state.recorder_key += 1
-        elif not is_success:
-            st.session_state.attempt += 1
-            st.session_state.recorder_key += 1
 
+        st.session_state.recorder_key += 1
         st.rerun()
