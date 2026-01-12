@@ -2,31 +2,26 @@
   {
     "id": 1,
     "file": "my-1.jpg",
-    "description": "My with her brother and cousin Sophia, grandparents (Nani and Bhaijan), and her mom at Nani's house at the dining table.",
-    "initial_prompt": "My! Look at everyone at Nani's house! Is that Nani and Bhaijan sitting with you at the table?"
+    "description": "My sitting at a dining table with her brother, her mom, her grandmom, and her granddad."
   },
   {
     "id": 2,
     "file": "my-2.jpg",
-    "description": "My brushing her hair in her house in the kitchen wearing a blue t-shirt.",
-    "initial_prompt": "Ooooh, My! You look so pretty in your blue shirt! Are you brushing your hair to get ready for the pool?"
+    "description": "My standing in the kitchen, brushing her hair."
   },
   {
     "id": 3,
     "file": "my-3.jpg",
-    "description": "My in the car with her brother, cousin Zersha, mom, and dad.",
-    "initial_prompt": "Beep beep! My, are you in the car? I see Zersha too! Are you going to Disney World?"
+    "description": "My sitting in a car with her brother, her mom, her dad, and her cousin."
   },
   {
     "id": 4,
     "file": "my-4.jpg",
-    "description": "My in her house at her dining table with her brother and mom while they are eating.",
-    "initial_prompt": "Yum yum! My, are you having a snack with your brother? What are you eating that is so tasty?"
+    "description": "My sitting at a table with her brother and her mom while eating."
   },
   {
     "id": 5,
     "file": "my-5.jpg",
-    "description": "My's brother and dad on an airplane.",
-    "initial_prompt": "Whoa, My! Look at the airplane! Is that Dad and your brother flying way up in the sky?"
+    "description": "My looking at her brother and her dad on an airplane."
   }
 ]
