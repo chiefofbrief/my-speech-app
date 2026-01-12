@@ -351,53 +351,54 @@ with col2:
 
 # ---------------- INTERACTION ----------------
 if audio_input:
+    # Save audio BEFORE rerun (audio_input is lost after rerun)
+    with open("input.wav", "wb") as f:
+        f.write(audio_input)
     st.session_state.status = "thinking"
     st.rerun()  # Show thinking state immediately
 
 # Check if we need to process (after rerun from thinking state)
-if st.session_state.status == "thinking":
-    # Look for recent audio file
-    if os.path.exists("input.wav"):
-        try:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=open("input.wav", "rb")
-            ).text.strip()
-        except Exception:
-            transcript = ""
+if st.session_state.status == "thinking" and os.path.exists("input.wav"):
+    try:
+        transcript = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=open("input.wav", "rb")
+        ).text.strip()
+    except Exception:
+        transcript = ""
 
-        if not transcript:
-            transcript = "mmm"
+    if not transcript:
+        transcript = "mmm"
 
-        is_success = check_success(transcript, current_img["description"])
+    is_success = check_success(transcript, current_img["description"])
 
-        if is_success:
-            st.session_state.successes += 1
+    if is_success:
+        st.session_state.successes += 1
 
-        ai_text = generate_ai_response(
-            transcript,
-            current_img["description"],
-            sys_prompt,
-            st.session_state.attempt,
-            is_success,
-            st.session_state.successes
-        )
+    ai_text = generate_ai_response(
+        transcript,
+        current_img["description"],
+        sys_prompt,
+        st.session_state.attempt,
+        is_success,
+        st.session_state.successes
+    )
 
-        st.session_state.sarah_text = ai_text
-        st.session_state.audio_bytes = tts_speak(add_pauses(ai_text))
-        st.session_state.status = "talking"
+    st.session_state.sarah_text = ai_text
+    st.session_state.audio_bytes = tts_speak(add_pauses(ai_text))
+    st.session_state.status = "talking"
 
-        # Handle progression
-        should_move = st.session_state.successes >= MAX_WHO_ELSE or st.session_state.attempt >= MAX_ATTEMPTS
-        if should_move or "another photo" in ai_text.lower() or "next" in ai_text.lower():
-            st.session_state.should_advance = True
-        elif not is_success:
-            st.session_state.attempt += 1
+    # Handle progression
+    should_move = st.session_state.successes >= MAX_WHO_ELSE or st.session_state.attempt >= MAX_ATTEMPTS
+    if should_move or "another photo" in ai_text.lower() or "next" in ai_text.lower():
+        st.session_state.should_advance = True
+    elif not is_success:
+        st.session_state.attempt += 1
 
-        # Clean up audio file
-        try:
-            os.remove("input.wav")
-        except:
-            pass
+    # Clean up audio file
+    try:
+        os.remove("input.wav")
+    except:
+        pass
 
-        st.rerun()
+    st.rerun()
