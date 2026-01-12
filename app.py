@@ -4,6 +4,7 @@ import json
 import os
 import re
 from audio_recorder_streamlit import audio_recorder
+import random
 
 # ---------------- CONFIG ----------------
 api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -11,9 +12,14 @@ client = openai.Client(api_key=api_key)
 
 # ---------------- HELPERS ----------------
 def slow_text(text):
-    return ".\n\n".join(text.split(". "))
+    """Add extra pauses and line breaks for slower TTS."""
+    # Split by periods
+    parts = [p.strip() for p in text.split(".") if p.strip()]
+    # Join with double line breaks for pause
+    return ".\n\n".join(parts)
 
 def gentle_repeat(text):
+    """Repeat key noun phrases gently."""
     if not text:
         return ""
     for line in text.strip().split("\n"):
@@ -21,7 +27,16 @@ def gentle_repeat(text):
             return text + "\n\n" + line.strip()
     return text
 
+def sillyify(text):
+    """Add playful filler sounds to make speech silly."""
+    fillers = ["Mmm", "Oooh", "Hehe", "Ahh"]
+    # If short text, prepend/append a filler
+    if len(text.split()) <= 6:
+        return f"{random.choice(fillers)}. {text}. {random.choice(fillers)}."
+    return text
+
 def sanitize_text(text):
+    """Clean text for TTS."""
     if not text:
         return ""
     text = re.sub(r"[^\x00-\x7F]+", " ", text)
@@ -31,6 +46,7 @@ def sanitize_text(text):
     return text.strip()
 
 def tts_speak(text):
+    """Call OpenAI TTS safely."""
     text = sanitize_text(text)
     if not text:
         return None
@@ -46,6 +62,7 @@ def tts_speak(text):
         return None
 
 def generate_ai_response(transcript, img_description, sys_prompt):
+    """Generate AI response with rules and fallback."""
     image_rules = f"""
 WHO MODE:
 - Only talk about people in this description:
@@ -118,7 +135,8 @@ if not st.session_state.has_spoken:
     opening_text = "I see people together. Who is this?"
     st.session_state.sarah_text = opening_text
     st.session_state.status = "Sarah is talking…"
-    st.session_state.audio_bytes = tts_speak(slow_text(opening_text))
+    # Add slow + silly formatting
+    st.session_state.audio_bytes = tts_speak(sillyify(slow_text(opening_text)))
     st.session_state.has_spoken = True
 
 # ---------------- DISPLAY ----------------
@@ -158,8 +176,8 @@ if audio_input:
     # Generate AI response
     ai_text = generate_ai_response(transcript_mapped, current_img["description"], sys_prompt)
 
-    # Slow + gentle repetition
-    final_spoken = gentle_repeat(slow_text(ai_text))
+    # Slow + repeat + silly
+    final_spoken = sillyify(gentle_repeat(slow_text(ai_text)))
     if not final_spoken.strip():
         final_spoken = ai_text.strip() or "Mmm, I see!"
 
@@ -172,6 +190,7 @@ if audio_input:
 if st.session_state.audio_bytes:
     st.audio(st.session_state.audio_bytes, autoplay=True)
     st.session_state.audio_bytes = None
+
 
 
 
