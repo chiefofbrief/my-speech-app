@@ -11,10 +11,14 @@ api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 client = openai.Client(api_key=api_key)
 
 # ---------------- HELPERS ----------------
+def extra_slow_text(text):
+    """Insert line breaks between words for very slow TTS."""
+    return "\n\n".join(text.split())
+
 def slow_text(text):
-    """Add extra pauses for slower TTS."""
+    """Add extra pauses for AI-generated sentences."""
     parts = [p.strip() for p in re.split(r'[.!?]', text) if p.strip()]
-    return ".\n\n\n".join(parts)  # triple line breaks for extra pause
+    return ".\n\n\n".join(parts)  # triple line breaks for natural pause
 
 def gentle_repeat(text):
     """Repeat key noun phrases gently."""
@@ -26,10 +30,14 @@ def gentle_repeat(text):
     return text
 
 def playful_expand(text):
-    """Make short AI outputs more playful and encouraging."""
+    """
+    Make short AI outputs more playful, slower, and encouraging.
+    Adds filler sounds and extra line breaks for TTS.
+    """
     fillers = ["Mmm", "Oooh", "Hehe", "Ahh"]
-    if len(text.split()) <= 8:
-        text = f"{random.choice(fillers)}. {text}. {random.choice(fillers)}."
+    text = f"{random.choice(fillers)}.\n\n{text}.\n\n{random.choice(fillers)}."
+    # For very short text, add another playful line
+    if len(text.split()) <= 12:
         text += f"\n\n{random.choice(fillers)}, that’s wonderful!"
     return text
 
@@ -81,7 +89,7 @@ WHO MODE:
                 {"role": "system", "content": image_rules},
                 {"role": "user", "content": transcript}
             ],
-            max_completion_tokens=70  # slightly longer for playful follow-ups
+            max_completion_tokens=70
         )
         ai_text = response.choices[0].message.content.strip()
         if not ai_text:
@@ -133,7 +141,9 @@ if not st.session_state.has_spoken:
     opening_text = "I see people together. Who is this?"
     st.session_state.sarah_text = opening_text
     st.session_state.status = "Sarah is talking…"
-    st.session_state.audio_bytes = tts_speak(playful_expand(slow_text(opening_text)))
+    # Slow word by word + playful expansion
+    final_opening = playful_expand(extra_slow_text(opening_text))
+    st.session_state.audio_bytes = tts_speak(final_opening)
     st.session_state.has_spoken = True
 
 # ---------------- DISPLAY ----------------
@@ -163,6 +173,7 @@ if audio_input:
     except Exception:
         transcript = ""
 
+    # Fallback for very short sounds
     if not transcript:
         transcript = "mmm"
 
@@ -170,7 +181,7 @@ if audio_input:
 
     ai_text = generate_ai_response(transcript_mapped, current_img["description"], sys_prompt)
 
-    # Slow, repeat, playful, encouraging
+    # Slow + repeat + playful + encouraging
     final_spoken = gentle_repeat(slow_text(ai_text))
     final_spoken = playful_expand(final_spoken)
 
@@ -182,6 +193,7 @@ if audio_input:
 if st.session_state.audio_bytes:
     st.audio(st.session_state.audio_bytes, autoplay=True)
     st.session_state.audio_bytes = None
+
 
 
 
