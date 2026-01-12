@@ -3,6 +3,7 @@ import openai
 import json
 import os
 import re
+import random
 from audio_recorder_streamlit import audio_recorder
 
 # ---------------- CONFIG ----------------
@@ -11,15 +12,26 @@ client = openai.Client(api_key=api_key)
 
 MAX_ATTEMPTS = 3
 MAX_WHO_ELSE = 2  # Only ask "who else?" twice per photo
-TTS_SPEED = 0.85
+TTS_SPEED = 0.75  # Slower for more natural pace
 
 # ---------------- HELPERS ----------------
+def slow_opening(text):
+    """Extra slow word-by-word pacing for opening lines."""
+    return "\n\n".join(text.split())
+
 def add_pauses(text):
-    """Add natural pauses between sentences for TTS."""
+    """Add longer pauses between sentences for TTS."""
     if not text:
         return ""
     parts = [p.strip() for p in re.split(r'[.!?]', text) if p.strip()]
-    return ".\n\n".join(parts) + "."
+    return ".\n\n\n".join(parts) + "."  # Triple line breaks
+
+def playful_wrap(text):
+    """Add playful fillers to make responses warmer."""
+    fillers = ["Mmm.", "Oooh.", "Hehe.", "Ahh."]
+    opener = random.choice(fillers)
+    # Add filler at start, pause, then the text
+    return f"{opener}\n\n{text}"
 
 def sanitize_text(text):
     """Clean text for TTS."""
@@ -310,7 +322,7 @@ if not st.session_state.has_spoken:
     opening = "Oooh, I see a photo! Who is this?"
     st.session_state.sarah_text = opening
     st.session_state.status = "talking"
-    st.session_state.audio_bytes = tts_speak(add_pauses(opening))
+    st.session_state.audio_bytes = tts_speak(slow_opening(opening))
     st.session_state.has_spoken = True
 
 # ---------------- DISPLAY SARAH TEXT ----------------
@@ -385,7 +397,7 @@ if st.session_state.status == "thinking" and os.path.exists("input.wav"):
     )
 
     st.session_state.sarah_text = ai_text
-    st.session_state.audio_bytes = tts_speak(add_pauses(ai_text))
+    st.session_state.audio_bytes = tts_speak(playful_wrap(add_pauses(ai_text)))
     st.session_state.status = "talking"
 
     # Handle progression
