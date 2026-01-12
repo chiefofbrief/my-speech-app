@@ -4,15 +4,17 @@ import json
 import os
 import re
 import random
+import hashlib
 from audio_recorder_streamlit import audio_recorder
 
 # ---------------- CONFIG ----------------
 api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 client = openai.Client(api_key=api_key)
 
-MAX_ATTEMPTS = 3
-MAX_WHO_ELSE = 2  # Only ask "who else?" twice per photo
-TTS_SPEED = 0.75  # Slower for more natural pace
+# Conversation pacing - this is meant to be SLOW and encouraging
+MIN_TURNS_PER_PHOTO = 5   # At least 5 back-and-forth exchanges per photo
+MAX_TURNS_PER_PHOTO = 8   # Move on after 8 turns max
+TTS_SPEED = 0.75
 
 # ---------------- HELPERS ----------------
 def slow_opening(text):
@@ -24,13 +26,12 @@ def add_pauses(text):
     if not text:
         return ""
     parts = [p.strip() for p in re.split(r'[.!?]', text) if p.strip()]
-    return ".\n\n\n".join(parts) + "."  # Triple line breaks
+    return ".\n\n\n".join(parts) + "."
 
 def playful_wrap(text):
     """Add playful fillers to make responses warmer."""
-    fillers = ["Mmm.", "Oooh.", "Hehe.", "Ahh."]
+    fillers = ["Mmm.", "Oooh.", "Hehe.", "Ahh.", "Ooh."]
     opener = random.choice(fillers)
-    # Add filler at start, pause, then the text
     return f"{opener}\n\n{text}"
 
 def sanitize_text(text):
@@ -88,34 +89,49 @@ def check_success(transcript, description):
             return True
 
     for word, mapped in word_map.items():
-        if word in transcript_lower and mapped in relationships:
-            return True
         if word in transcript_lower:
             for rel in relationships:
-                if mapped in rel or rel in mapped:
+                if mapped == rel or mapped in rel or rel in mapped:
                     return True
 
     return False
 
-def generate_ai_response(transcript, img_description, sys_prompt, attempt, is_success, successes):
-    """Generate AI response based on attempt number and success."""
+def generate_ai_response(transcript, img_description, sys_prompt, turn_number, is_success, ready_to_move):
+    """Generate AI response based on turn number and conversation flow."""
 
-    should_move_on = successes >= MAX_WHO_ELSE or attempt >= MAX_ATTEMPTS
+    # Determine the conversation phase
+    if turn_number == 1:
+        phase = "OPENING"
+        instruction = "This is your first response. Be warm, describe something simple in the photo, ask 'Who is this?'"
+    elif turn_number <= 3:
+        phase = "EARLY"
+        instruction = "Keep encouraging! If they got someone right, celebrate big and ask 'Who else do you see?' If not, give a gentle hint about ONE person."
+    elif turn_number <= 5:
+        phase = "MIDDLE"
+        instruction = "Keep the energy up! Celebrate any response. Point out someone they haven't mentioned yet. Ask playful questions."
+    elif ready_to_move:
+        phase = "WRAPPING UP"
+        instruction = "Time to finish this photo. Give big celebration for the conversation, then say 'Let's see another photo!'"
+    else:
+        phase = "CONTINUING"
+        instruction = "Keep going! Find something new to point out or ask about. Stay playful and encouraging."
 
     context = f"""
 IMAGE DESCRIPTION: {img_description}
 
-ATTEMPT NUMBER: {attempt}
+TURN NUMBER: {turn_number}
+PHASE: {phase}
 USER SAID: "{transcript}"
-CORRECT ANSWER DETECTED: {"Yes" if is_success else "No"}
-TIMES CORRECTLY ANSWERED ON THIS PHOTO: {successes}
-SHOULD MOVE TO NEXT PHOTO: {"Yes" if should_move_on else "No"}
+THEY NAMED SOMEONE CORRECTLY: {"Yes" if is_success else "No"}
 
-Remember:
+INSTRUCTION: {instruction}
+
+RULES:
 - Only mention people from the IMAGE DESCRIPTION
-- Keep sentences very short (3-6 words)
-- Be warm and encouraging
-- If SHOULD MOVE TO NEXT PHOTO is Yes, say "Let's see another photo!"
+- Very short sentences (3-6 words)
+- Be warm, playful, encouraging
+- NEVER say the user is wrong
+- Only say "Let's see another photo!" if PHASE is "WRAPPING UP"
 """
 
     try:
@@ -125,32 +141,40 @@ Remember:
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": context}
             ],
-            max_tokens=60,
-            temperature=0.7
+            max_tokens=70,
+            temperature=0.8
         )
         ai_text = response.choices[0].message.content.strip()
         if not ai_text:
-            return "Mmm, good! Tell me more!"
+            return "Mmm, tell me more!"
         return ai_text
     except Exception as e:
         st.error(f"AI error: {e}")
-        return "Mmm, good! Tell me more!"
+        return "Mmm, tell me more!"
+
+def get_audio_hash(audio_bytes):
+    """Get hash of audio bytes to detect duplicates."""
+    if not audio_bytes:
+        return None
+    return hashlib.md5(audio_bytes).hexdigest()
 
 # ---------------- SESSION STATE ----------------
-defaults = {
-    "idx": 0,
-    "attempt": 1,
-    "successes": 0,  # Track correct answers per photo
-    "sarah_text": "",
-    "status": "ready",  # ready, listening, thinking, talking
-    "audio_bytes": None,
-    "has_spoken": False,
-    "should_advance": False,
-    "all_done": False
-}
-for key, val in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
+if "idx" not in st.session_state:
+    st.session_state.idx = 0
+if "turn" not in st.session_state:
+    st.session_state.turn = 0  # Total turns on current photo
+if "sarah_text" not in st.session_state:
+    st.session_state.sarah_text = ""
+if "audio_bytes" not in st.session_state:
+    st.session_state.audio_bytes = None
+if "has_spoken" not in st.session_state:
+    st.session_state.has_spoken = False
+if "all_done" not in st.session_state:
+    st.session_state.all_done = False
+if "last_audio_hash" not in st.session_state:
+    st.session_state.last_audio_hash = None
+if "recorder_key" not in st.session_state:
+    st.session_state.recorder_key = 0
 
 # ---------------- DATA ----------------
 with open("data/image_data.json") as f:
@@ -161,116 +185,58 @@ with open("system_prompt.txt") as f:
 total_photos = len(images)
 
 # ---------------- STYLE ----------------
-# Dynamic colors based on state
-state_colors = {
-    "ready": "#9dbdb1",      # Calm green
-    "listening": "#f4a261",  # Warm orange
-    "thinking": "#e9c46a",   # Yellow (with pulse)
-    "talking": "#9dbdb1"     # Calm green
-}
-
-current_color = state_colors.get(st.session_state.status, "#9dbdb1")
-is_thinking = st.session_state.status == "thinking"
-
-st.markdown(f"""
+st.markdown("""
 <style>
-header, footer {{visibility: hidden;}}
-.block-container {{max-width:800px;margin:auto;}}
+header, footer {visibility: hidden;}
+.block-container {max-width:800px;margin:auto;}
 
-.sarah {{
+.sarah {
     font-size: 48px;
     font-weight: 900;
     padding: 35px;
     border-radius: 30px;
-    border: 6px solid {current_color};
+    border: 6px solid #9dbdb1;
     text-align: center;
     margin-bottom: 10px;
-    transition: border-color 0.3s ease;
-}}
+}
 
-.status {{
+.status {
     text-align: center;
     font-size: 24px;
     color: #7a7a7a;
     margin-bottom: 20px;
-}}
+}
 
-.progress {{
+.progress {
     text-align: center;
     font-size: 20px;
     color: #888;
     margin-bottom: 15px;
     font-weight: 500;
-}}
+}
 
-/* Thinking indicator - pulsing animation */
-.thinking-indicator {{
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 12px;
-    padding: 20px;
-    margin: 20px 0;
-}}
-
-.thinking-dot {{
-    width: 20px;
-    height: 20px;
-    background-color: #e9c46a;
-    border-radius: 50%;
-    animation: pulse 1.4s ease-in-out infinite;
-}}
-
-.thinking-dot:nth-child(2) {{
-    animation-delay: 0.2s;
-}}
-
-.thinking-dot:nth-child(3) {{
-    animation-delay: 0.4s;
-}}
-
-@keyframes pulse {{
-    0%, 100% {{
-        transform: scale(0.8);
-        opacity: 0.5;
-    }}
-    50% {{
-        transform: scale(1.2);
-        opacity: 1;
-    }}
-}}
-
-/* Talk button - bigger and with state color */
-div[data-testid="stAudioRecorder"] button {{
+div[data-testid="stAudioRecorder"] button {
     width: 100% !important;
     height: 400px !important;
     border-radius: 60px !important;
-    background-color: {current_color} !important;
+    background-color: #9dbdb1 !important;
     border: 12px solid white !important;
-    transition: background-color 0.3s ease;
-}}
+}
 
-div[data-testid="stAudioRecorder"] svg {{
+div[data-testid="stAudioRecorder"] svg {
     transform: scale(7);
-}}
+}
 
-/* Skip button styling */
-.skip-btn {{
-    text-align: center;
-    margin-top: 20px;
-}}
-
-.stButton > button {{
+.stButton > button {
     background-color: #ddd;
     color: #666;
     border: none;
     padding: 10px 30px;
     border-radius: 20px;
     font-size: 16px;
-}}
+}
 
-/* All done celebration */
-.celebration {{
+.celebration {
     font-size: 56px;
     font-weight: 900;
     padding: 50px;
@@ -278,32 +244,26 @@ div[data-testid="stAudioRecorder"] svg {{
     border: 8px solid #9dbdb1;
     text-align: center;
     background: linear-gradient(135deg, #f0fff0 0%, #e8f5e9 100%);
-}}
+}
 </style>
 """, unsafe_allow_html=True)
-
-# Handle photo advancement
-if st.session_state.should_advance:
-    next_idx = st.session_state.idx + 1
-    if next_idx >= total_photos:
-        st.session_state.all_done = True
-    else:
-        st.session_state.idx = next_idx
-    st.session_state.attempt = 1
-    st.session_state.successes = 0
-    st.session_state.has_spoken = False
-    st.session_state.should_advance = False
 
 # ---------------- ALL DONE STATE ----------------
 if st.session_state.all_done:
     st.markdown("<div class='celebration'>All done! Great job, My!</div>", unsafe_allow_html=True)
-    celebration_audio = tts_speak("Yay! All done! Great job My! You did so well!")
+    celebration_audio = tts_speak("Yay! All done! Great job My! You did so well! I'm so proud of you!")
     if celebration_audio:
         st.audio(celebration_audio, autoplay=True)
 
     if st.button("Start Over"):
-        for key, val in defaults.items():
-            st.session_state[key] = val
+        st.session_state.idx = 0
+        st.session_state.turn = 0
+        st.session_state.sarah_text = ""
+        st.session_state.audio_bytes = None
+        st.session_state.has_spoken = False
+        st.session_state.all_done = False
+        st.session_state.last_audio_hash = None
+        st.session_state.recorder_key += 1
         st.rerun()
     st.stop()
 
@@ -311,7 +271,6 @@ if st.session_state.all_done:
 current_img = images[st.session_state.idx]
 img_path = os.path.join("assets", current_img["file"])
 
-# Progress indicator
 st.markdown(f"<div class='progress'>Photo {st.session_state.idx + 1} of {total_photos}</div>", unsafe_allow_html=True)
 
 if os.path.exists(img_path):
@@ -321,29 +280,13 @@ if os.path.exists(img_path):
 if not st.session_state.has_spoken:
     opening = "Oooh, I see a photo! Who is this?"
     st.session_state.sarah_text = opening
-    st.session_state.status = "talking"
     st.session_state.audio_bytes = tts_speak(slow_opening(opening))
     st.session_state.has_spoken = True
+    st.session_state.turn = 1
 
 # ---------------- DISPLAY SARAH TEXT ----------------
 st.markdown(f"<div class='sarah'>{st.session_state.sarah_text}</div>", unsafe_allow_html=True)
-
-# ---------------- THINKING INDICATOR ----------------
-if st.session_state.status == "thinking":
-    st.markdown("""
-    <div class='thinking-indicator'>
-        <div class='thinking-dot'></div>
-        <div class='thinking-dot'></div>
-        <div class='thinking-dot'></div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("<div class='status'>Sarah is thinking...</div>", unsafe_allow_html=True)
-elif st.session_state.status == "listening":
-    st.markdown("<div class='status'>Sarah is listening...</div>", unsafe_allow_html=True)
-elif st.session_state.status == "talking":
-    st.markdown("<div class='status'>Sarah is talking...</div>", unsafe_allow_html=True)
-else:
-    st.markdown("<div class='status'>Tap to talk</div>", unsafe_allow_html=True)
+st.markdown("<div class='status'>Tap and hold to talk</div>", unsafe_allow_html=True)
 
 # ---------------- AUDIO PLAY ----------------
 if st.session_state.audio_bytes:
@@ -351,60 +294,85 @@ if st.session_state.audio_bytes:
     st.session_state.audio_bytes = None
 
 # ---------------- MICROPHONE ----------------
-audio_input = audio_recorder(text="", neutral_color=current_color, icon_size="4x")
+audio_input = audio_recorder(
+    text="",
+    icon_size="4x",
+    pause_threshold=2.0,
+    sample_rate=16000,
+    key=f"recorder_{st.session_state.recorder_key}"
+)
 
 # ---------------- SKIP BUTTON ----------------
 col1, col2, col3 = st.columns([1, 1, 1])
 with col2:
-    if st.button("Skip Photo", key="skip"):
-        st.session_state.should_advance = True
+    if st.button("Next Photo"):
+        st.session_state.idx += 1
+        if st.session_state.idx >= total_photos:
+            st.session_state.all_done = True
+        st.session_state.turn = 0
+        st.session_state.has_spoken = False
+        st.session_state.last_audio_hash = None
+        st.session_state.recorder_key += 1
         st.rerun()
 
 # ---------------- INTERACTION ----------------
-# Process audio immediately when received
 if audio_input:
-    # Transcribe directly from bytes
-    try:
-        with open("input.wav", "wb") as f:
-            f.write(audio_input)
+    audio_hash = get_audio_hash(audio_input)
 
-        with open("input.wav", "rb") as f:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f
-            ).text.strip()
-    except Exception as e:
+    if audio_hash and audio_hash != st.session_state.last_audio_hash:
+        st.session_state.last_audio_hash = audio_hash
+        st.session_state.turn += 1
+
+        # Transcribe
         transcript = ""
+        try:
+            with open("input.wav", "wb") as f:
+                f.write(audio_input)
+            with open("input.wav", "rb") as f:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f
+                ).text.strip()
+            os.remove("input.wav")
+        except Exception as e:
+            st.error(f"Transcription error: {e}")
+            transcript = ""
 
-    # Clean up
-    if os.path.exists("input.wav"):
-        os.remove("input.wav")
+        if not transcript:
+            transcript = "mmm"
 
-    if not transcript:
-        transcript = "mmm"
+        # Check if they named someone
+        is_success = check_success(transcript, current_img["description"])
 
-    is_success = check_success(transcript, current_img["description"])
+        # Determine if ready to move (only after minimum turns)
+        ready_to_move = st.session_state.turn >= MIN_TURNS_PER_PHOTO
 
-    if is_success:
-        st.session_state.successes += 1
+        # Generate response
+        ai_text = generate_ai_response(
+            transcript,
+            current_img["description"],
+            sys_prompt,
+            st.session_state.turn,
+            is_success,
+            ready_to_move
+        )
 
-    ai_text = generate_ai_response(
-        transcript,
-        current_img["description"],
-        sys_prompt,
-        st.session_state.attempt,
-        is_success,
-        st.session_state.successes
-    )
+        st.session_state.sarah_text = ai_text
+        st.session_state.audio_bytes = tts_speak(playful_wrap(add_pauses(ai_text)))
 
-    st.session_state.sarah_text = ai_text
-    st.session_state.audio_bytes = tts_speak(playful_wrap(add_pauses(ai_text)))
+        # Only advance if we've had enough turns AND the AI said to move on
+        should_advance = (
+            st.session_state.turn >= MIN_TURNS_PER_PHOTO and
+            "another photo" in ai_text.lower()
+        ) or st.session_state.turn >= MAX_TURNS_PER_PHOTO
 
-    # Handle progression
-    should_move = st.session_state.successes >= MAX_WHO_ELSE or st.session_state.attempt >= MAX_ATTEMPTS
-    if should_move or "another photo" in ai_text.lower() or "next" in ai_text.lower():
-        st.session_state.should_advance = True
-    elif not is_success:
-        st.session_state.attempt += 1
+        if should_advance:
+            st.session_state.idx += 1
+            if st.session_state.idx >= total_photos:
+                st.session_state.all_done = True
+            st.session_state.turn = 0
+            st.session_state.has_spoken = False
+            st.session_state.last_audio_hash = None
 
-    st.rerun()
+        st.session_state.recorder_key += 1
+        st.rerun()
