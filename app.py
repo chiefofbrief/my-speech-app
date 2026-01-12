@@ -362,7 +362,7 @@ with col2:
         st.rerun()
 
 # ---------------- INTERACTION ----------------
-if audio_input:
+if audio_input and st.session_state.status != "thinking":
     # Save audio BEFORE rerun (audio_input is lost after rerun)
     with open("input.wav", "wb") as f:
         f.write(audio_input)
