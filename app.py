@@ -12,11 +12,11 @@ client = openai.Client(api_key=api_key)
 
 # ---------------- HELPERS ----------------
 def extra_slow_text(text):
-    """Insert line breaks between words for very slow TTS."""
+    """Insert line breaks between words for very slow TTS (used for opening line)."""
     return "\n\n".join(text.split())
 
 def slow_text(text):
-    """Add extra pauses for AI-generated sentences."""
+    """Add extra pauses for AI-generated sentences (follow-ups)."""
     parts = [p.strip() for p in re.split(r'[.!?]', text) if p.strip()]
     return ".\n\n\n".join(parts)  # triple line breaks for natural pause
 
@@ -33,6 +33,7 @@ def playful_expand(text):
     """
     Make short AI outputs more playful, slower, and encouraging.
     Adds filler sounds and extra line breaks for TTS.
+    Only for follow-up AI responses, NOT opening line.
     """
     fillers = ["Mmm", "Oooh", "Hehe", "Ahh"]
     text = f"{random.choice(fillers)}.\n\n{text}.\n\n{random.choice(fillers)}."
@@ -141,8 +142,8 @@ if not st.session_state.has_spoken:
     opening_text = "I see people together. Who is this?"
     st.session_state.sarah_text = opening_text
     st.session_state.status = "Sarah is talking…"
-    # Slow word by word + playful expansion
-    final_opening = playful_expand(extra_slow_text(opening_text))
+    # Slow word by word, no extra filler
+    final_opening = extra_slow_text(opening_text)
     st.session_state.audio_bytes = tts_speak(final_opening)
     st.session_state.has_spoken = True
 
@@ -193,6 +194,7 @@ if audio_input:
 if st.session_state.audio_bytes:
     st.audio(st.session_state.audio_bytes, autoplay=True)
     st.session_state.audio_bytes = None
+
 
 
 
